@@ -20,7 +20,7 @@ public struct DoubleRange {
     }
 
     public var isZero: Bool {
-        return abs(minValue) < Double.ulpOfOne && abs(maxValue) < Double.ulpOfOne
+        return abs(minValue) < .ulpOfOne && abs(maxValue) < .ulpOfOne
     }
 }
 
@@ -43,6 +43,14 @@ extension DoubleRange: RawRepresentable {
 }
 
 
+extension DoubleRange: Equatable {
+    public static func ==(lhs: DoubleRange, rhs: DoubleRange) -> Bool {
+        return abs(lhs.minValue - rhs.minValue) < .ulpOfOne &&
+               abs(lhs.maxValue - rhs.maxValue) < .ulpOfOne
+    }
+}
+
+
 /// Defines a daily schedule of glucose ranges
 public struct GlucoseRangeSchedule: DailySchedule {
     public typealias RawValue = [String: Any]
@@ -56,7 +64,7 @@ public struct GlucoseRangeSchedule: DailySchedule {
 
         public let context: Context
         public let start: Date
-        public let end: Date?
+        public let end: Date
         public let value: DoubleRange
 
         /// Initializes a new override
@@ -69,12 +77,12 @@ public struct GlucoseRangeSchedule: DailySchedule {
         public init(context: Context, start: Date, end: Date?, value: DoubleRange) {
             self.context = context
             self.start = start
-            self.end = end
+            self.end = end ?? .distantFuture
             self.value = value
         }
 
         public var activeDates: DateInterval {
-            return DateInterval(start: start, end: end ?? .distantFuture)
+            return DateInterval(start: start, end: end)
         }
 
         public func isActive(at date: Date = Date()) -> Bool {
@@ -84,39 +92,11 @@ public struct GlucoseRangeSchedule: DailySchedule {
 
     var rangeSchedule: DailyQuantitySchedule<DoubleRange>
 
-    @available(*, deprecated, message: "Use `overrideRanges` instead")
-    public var workoutRange: DoubleRange? {
-        return overrideRanges[.workout]
-    }
-
     /// Default override values per context type
     public var overrideRanges: [Override.Context: DoubleRange]
 
-    /// A single override range and its end date (by the system clock)
-    @available(*, deprecated, message: "Use `override` instead")
-    public var temporaryOverride: AbsoluteScheduleValue<DoubleRange>? {
-        guard let override = override else {
-            return nil
-        }
-
-        let endDate = override.end ?? .distantFuture
-        return AbsoluteScheduleValue(startDate: endDate, endDate: endDate, value: override.value)
-    }
-
     /// The last-configured override of the range schedule
     public private(set) var override: Override?
-
-    /**
-     Enables the predefined workout range until the given system date
-     
-     - parameter date: The system date before which the workout range is used
-     
-     - returns: True if a range was configured to set, false otherwise
-     */
-    @available(*, deprecated, message: "Use setOverride(_:from:until:) instead")
-    public mutating func setWorkoutOverride(until date: Date) -> Bool {
-        return setOverride(.workout, until: date)
-    }
 
     /// Enables the predefined override value to be active during a specified system date range
     ///
@@ -143,14 +123,6 @@ public struct GlucoseRangeSchedule: DailySchedule {
         }
 
         self.override = nil
-    }
-
-    @available(*, deprecated, message: "Use init(unit:dailyItems:timeZone:overrideRanges:) instead")
-    public init?(unit: HKUnit, dailyItems: [RepeatingScheduleValue<DoubleRange>], workoutRange: DoubleRange? = nil, timeZone: TimeZone? = nil) {
-        var overrideRanges: [Override.Context: DoubleRange] = [:]
-        overrideRanges[.workout] = workoutRange
-
-        self.init(unit: unit, dailyItems: dailyItems, timeZone: timeZone, overrideRanges: overrideRanges)
     }
 
     public init?(unit: HKUnit, dailyItems: [RepeatingScheduleValue<DoubleRange>], timeZone: TimeZone? = nil, overrideRanges: [Override.Context: DoubleRange], override: Override? = nil) {
@@ -197,6 +169,23 @@ public struct GlucoseRangeSchedule: DailySchedule {
 
     public func between(start startDate: Date, end endDate: Date) -> [AbsoluteScheduleValue<DoubleRange>] {
         return rangeSchedule.between(start: startDate, end: endDate)
+    }
+
+    public func quantityBetween(start: Date, end: Date) -> [AbsoluteScheduleValue<Range<HKQuantity>>] {
+        var quantitySchedule = [AbsoluteScheduleValue<Range<HKQuantity>>]()
+
+        for schedule in between(start: start, end: end) {
+            let lowerBound = HKQuantity(unit: unit, doubleValue: schedule.value.minValue)
+            let upperBound = HKQuantity(unit: unit, doubleValue: schedule.value.maxValue)
+
+            quantitySchedule.append(AbsoluteScheduleValue(
+                startDate: schedule.startDate,
+                endDate: schedule.endDate,
+                value: lowerBound..<upperBound
+            ))
+        }
+
+        return quantitySchedule
     }
 
     public func value(at time: Date) -> DoubleRange {
@@ -253,21 +242,34 @@ extension GlucoseRangeSchedule.Override: RawRepresentable {
             return nil
         }
 
-        self.context = context
-        self.start = start
-        self.end = rawValue["end"] as? Date
-        self.value = value
+        self.init(context: context, start: start, end: rawValue["end"] as? Date, value: value)
     }
 
     public var rawValue: RawValue {
-        var raw: RawValue = [
+        return [
             "context": context.rawValue,
             "start": start,
+            "end": end,
             "value": value.rawValue
         ]
+    }
+}
 
-        raw["end"] = end
 
-        return raw
+extension GlucoseRangeSchedule.Override: Equatable {
+    public static func ==(lhs: GlucoseRangeSchedule.Override, rhs: GlucoseRangeSchedule.Override) -> Bool {
+        return lhs.context == rhs.context &&
+            lhs.start == rhs.start &&
+            lhs.end == rhs.end &&
+            lhs.value == rhs.value
+    }
+}
+
+
+extension GlucoseRangeSchedule: Equatable {
+    public static func ==(lhs: GlucoseRangeSchedule, rhs: GlucoseRangeSchedule) -> Bool {
+        return lhs.rangeSchedule == rhs.rangeSchedule &&
+            lhs.overrideRanges == rhs.overrideRanges &&
+            lhs.override == rhs.override
     }
 }
